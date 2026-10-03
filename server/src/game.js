@@ -1,3 +1,5 @@
+import { publicRoundState } from './round.js'
+
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 export function normalizeRoomCode(value = '') {
@@ -49,6 +51,7 @@ export function publicRoomState(room, viewerId) {
   return {
     code: room.code,
     status: room.status,
+    round: publicRoundState(room, viewerId),
     hostId: room.hostId,
     playerCount: room.players.size,
     allReady: [...room.players.values()].every((player) => Boolean(player.character)),
@@ -64,7 +67,8 @@ export function publicRoomState(room, viewerId) {
       connected: player.connected,
       isReady: Boolean(player.character),
       assignedCharacter:
-        room.status === 'playing' && player.id !== viewerId
+        (room.status === 'playing' || room.status === 'finished') &&
+        (player.id !== viewerId || room.round?.winner?.id === viewerId)
           ? player.assignedCharacter
           : null,
       isMe: player.id === viewerId,

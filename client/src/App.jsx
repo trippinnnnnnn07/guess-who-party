@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { io } from 'socket.io-client'
+import Game from './Game.jsx'
 import {
   Check,
   Copy,
   Crown,
-  EyeOff,
   Image as ImageIcon,
   LoaderCircle,
   LogIn,
@@ -12,7 +12,6 @@ import {
   PartyPopper,
   Play,
   Plus,
-  RotateCcw,
   Sparkles,
   UploadCloud,
   Users,
@@ -44,6 +43,7 @@ function clearSession() {
 }
 
 function emitWithAck(event, payload = {}) {
+  if (!socket.connected) return Promise.resolve({ ok: false, error: 'กำลังเชื่อมต่อใหม่ กรุณารอสักครู่' })
   return new Promise((resolve) => {
     socket.timeout(8_000).emit(event, payload, (error, response) => {
       if (error) {
@@ -62,7 +62,7 @@ function Brand({ compact = false }) {
         ?
       </div>
       <div>
-        <strong>หัวใคร ใครรู้?</strong>
+        <strong>หัวใคร ใครรู้? <small className="version-tag">v0.2</small></strong>
         {!compact && <span>เกมทายตัวละครกับแก๊งเพื่อน</span>}
       </div>
     </div>
@@ -419,81 +419,8 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
   )
 }
 
-function CharacterCard({ player, featured = false }) {
-  const hidden = player.isMe
-  return (
-    <article className={`game-card ${featured ? 'game-card--featured' : ''} ${hidden ? 'game-card--hidden' : ''}`}>
-      <div className="game-card__label">
-        <span>{player.name}</span>
-        {player.isMe && <b>คุณ</b>}
-      </div>
-      <div className="game-card__image">
-        {hidden ? (
-          <div className="mystery-face">
-            <EyeOff size={28} />
-            <strong>?</strong>
-          </div>
-        ) : (
-          <img src={player.assignedCharacter?.imageDataUrl} alt={player.assignedCharacter?.name || ''} />
-        )}
-      </div>
-      <div className="game-card__answer">
-        {hidden ? (
-          <>
-            <strong>???</strong>
-            <span>ห้ามแอบดูนะ!</span>
-          </>
-        ) : (
-          <>
-            <strong>{player.assignedCharacter?.name}</strong>
-            <span>ตัวละครบนหัวของ {player.name}</span>
-          </>
-        )}
-      </div>
-    </article>
-  )
-}
-
-function Game({ room, connected, onLeave, onReset, busy }) {
-  const me = room.players.find((player) => player.isMe)
-  const others = room.players.filter((player) => !player.isMe)
-
-  return (
-    <div className="room-page game-page">
-      <RoomTopbar room={room} connected={connected} onLeave={onLeave} />
-      <main className="game page-shell">
-        <section className="game__heading">
-          <div>
-            <span className="eyebrow"><Sparkles size={16} /> เกมเริ่มแล้ว</span>
-            <h1>มองทุกคนให้ดี... ยกเว้นตัวเอง</h1>
-            <p>ผลัดกันถามคำถามกับเพื่อนผ่านช่องทางที่คุยกันอยู่ แล้วเดาให้ถูกว่าคุณคือใคร</p>
-          </div>
-          {me?.isHost && (
-            <button className="ghost-button" type="button" onClick={onReset} disabled={busy}>
-              <RotateCcw size={18} /> เริ่มรอบใหม่
-            </button>
-          )}
-        </section>
-
-        <section className="your-card-section">
-          <div className="section-label"><span>บนหัวของคุณ</span><i /></div>
-          <CharacterCard player={me} featured />
-        </section>
-
-        <section className="friends-section">
-          <div className="section-label"><span>ตัวละครของเพื่อน</span><i /></div>
-          <div className="game-grid">
-            {others.map((player) => <CharacterCard key={player.id} player={player} />)}
-          </div>
-        </section>
-
-        <div className="game-tip">
-          <b>ทริกเล็ก ๆ</b>
-          <span>เริ่มด้วยคำถามกว้าง ๆ เช่น “ฉันเป็นคนจริงไหม?” แล้วค่อยไล่ให้แคบลง</span>
-        </div>
-      </main>
-    </div>
-  )
+function receiveRoom(state) {
+  return { ...state, receivedAt: performance.now() }
 }
 
 function App() {
@@ -514,7 +441,7 @@ function App() {
       }
       const response = await emitWithAck('rejoinRoom', saved)
       if (response?.ok) {
-        setRoom(response.state)
+        setRoom(receiveRoom(response.state))
       } else {
         clearSession()
         sessionRef.current = null
@@ -529,7 +456,7 @@ function App() {
     }
 
     function handleRoomState(state) {
-      setRoom(state)
+      setRoom(receiveRoom(state))
     }
 
     function handleSessionReplaced() {
@@ -555,7 +482,7 @@ function App() {
 
   const currentView = useMemo(() => {
     if (!room) return 'landing'
-    return room.status === 'playing' ? 'game' : 'lobby'
+    return room.status === 'playing' || room.status === 'finished' ? 'game' : 'lobby'
   }, [room])
 
   async function enterRoom({ mode, name, roomCode, localError }) {
@@ -567,7 +494,7 @@ function App() {
     if (response?.ok) {
       sessionRef.current = response.session
       saveSession(response.session)
-      setRoom(response.state)
+      setRoom(receiveRoom(response.state))
     } else {
       setMessage(response?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
     }
@@ -578,7 +505,7 @@ function App() {
     setBusy(true)
     setMessage('')
     const response = await emitWithAck(event, payload)
-    if (response?.ok && response.state) setRoom(response.state)
+    if (response?.state) setRoom(receiveRoom(response.state))
     if (!response?.ok) setMessage(response?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
     setBusy(false)
     return response
@@ -618,8 +545,10 @@ function App() {
         <Game
           room={room}
           connected={connected}
-          onLeave={leaveRoom}
+          topbar={<RoomTopbar room={room} connected={connected} onLeave={leaveRoom} />}
           onReset={() => runRoomAction('resetGame')}
+          onAnswer={(turnId) => runRoomAction('requestAnswer', { turnId })}
+          onVote={(voteId, correct) => runRoomAction('castVote', { voteId, correct })}
           busy={busy}
         />
       )}

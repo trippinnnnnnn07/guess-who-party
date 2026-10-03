@@ -11,6 +11,14 @@ import {
   normalizeRoomCode,
   publicRoomState,
 } from './game.js'
+import {
+  advanceExpiredTurn,
+  castVote,
+  handleRoundDeparture,
+  requestAnswer,
+  resetRound,
+  startRound,
+} from './round.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const MAX_IMAGE_DATA_LENGTH = 5_000_000
@@ -39,6 +47,7 @@ export function createGameServer(options = {}) {
   const httpServer = http.createServer(app)
   const clientOrigin = options.clientOrigin ?? process.env.CLIENT_ORIGIN ?? 'http://localhost:5173'
   const rooms = new Map()
+  const turnTimers = new Map()
 
   app.use(cors({ origin: clientOrigin }))
   app.get('/health', (_request, response) => {
@@ -77,6 +86,27 @@ export function createGameServer(options = {}) {
     }
   }
 
+  function scheduleTurn(room) {
+    clearTimeout(turnTimers.get(room.code))
+    turnTimers.delete(room.code)
+    if (room.status !== 'playing' || room.round?.phase !== 'turn') return
+    const timer = setTimeout(() => {
+      turnTimers.delete(room.code)
+      if (!rooms.has(room.code)) return
+      if (advanceExpiredTurn(room)) broadcastRoom(room)
+      scheduleTurn(room)
+    }, Math.max(0, room.round.deadlineAt - Date.now()))
+    timer.unref()
+    turnTimers.set(room.code, timer)
+  }
+
+  function syncExpiredTurn(room) {
+    if (advanceExpiredTurn(room)) {
+      scheduleTurn(room)
+      broadcastRoom(room)
+    }
+  }
+
   function bindPlayer(socket, room, player) {
     if (player.socketId && player.socketId !== socket.id) {
       const previousSocket = io.sockets.sockets.get(player.socketId)
@@ -102,10 +132,12 @@ export function createGameServer(options = {}) {
 
     if (removePlayer) {
       room.players.delete(player.id)
+      handleRoundDeparture(room, player.id)
+      scheduleTurn(room)
       if (room.players.size === 0) {
         rooms.delete(room.code)
       } else if (room.hostId === player.id) {
-        room.hostId = room.players.keys().next().value
+        room.hostId = [...room.players.values()].find((item) => item.connected)?.id ?? room.players.keys().next().value
       }
     } else if (player.socketId === socket.id) {
       player.connected = false
@@ -129,6 +161,7 @@ export function createGameServer(options = {}) {
       const playerId = crypto.randomUUID()
       const player = {
         id: playerId,
+        sessionToken: crypto.randomBytes(32).toString('hex'),
         name,
         connected: true,
         socketId: socket.id,
@@ -147,7 +180,7 @@ export function createGameServer(options = {}) {
       bindPlayer(socket, room, player)
       reply(ack, {
         ok: true,
-        session: { roomCode: code, playerId },
+        session: { roomCode: code, playerId, sessionToken: player.sessionToken },
         state: publicRoomState(room, playerId),
       })
       broadcastRoom(room)
@@ -168,6 +201,7 @@ export function createGameServer(options = {}) {
       const playerId = crypto.randomUUID()
       const player = {
         id: playerId,
+        sessionToken: crypto.randomBytes(32).toString('hex'),
         name,
         connected: true,
         socketId: socket.id,
@@ -178,7 +212,7 @@ export function createGameServer(options = {}) {
       bindPlayer(socket, room, player)
       reply(ack, {
         ok: true,
-        session: { roomCode: code, playerId },
+        session: { roomCode: code, playerId, sessionToken: player.sessionToken },
         state: publicRoomState(room, playerId),
       })
       broadcastRoom(room)
@@ -188,7 +222,7 @@ export function createGameServer(options = {}) {
       const code = normalizeRoomCode(payload?.roomCode)
       const room = rooms.get(code)
       const player = room?.players.get(payload?.playerId)
-      if (!room || !player) {
+      if (!room || !player || payload?.sessionToken !== player.sessionToken) {
         return reply(ack, { ok: false, error: 'ห้องเดิมหมดอายุแล้ว' })
       }
 
@@ -196,9 +230,10 @@ export function createGameServer(options = {}) {
         socket.data.roomCode === room.code && socket.data.playerId === player.id
       if (!isAlreadyBound) removeSocketFromCurrentRoom(socket, true)
       bindPlayer(socket, room, player)
+      syncExpiredTurn(room)
       reply(ack, {
         ok: true,
-        session: { roomCode: code, playerId: player.id },
+        session: { roomCode: code, playerId: player.id, sessionToken: player.sessionToken },
         state: publicRoomState(room, player.id),
       })
       broadcastRoom(room)
@@ -222,6 +257,7 @@ export function createGameServer(options = {}) {
       const { room, player } = roomForSocket(socket)
       if (!room || !player) return reply(ack, { ok: false, error: 'คุณไม่ได้อยู่ในห้อง' })
       if (room.hostId !== player.id) return reply(ack, { ok: false, error: 'เฉพาะโฮสต์เท่านั้นที่เริ่มเกมได้' })
+      if (room.status !== 'waiting') return reply(ack, { ok: false, error: 'รอบนี้เริ่มไปแล้ว' })
       if (room.players.size < 2) return reply(ack, { ok: false, error: 'ต้องมีผู้เล่นอย่างน้อย 2 คน' })
       if ([...room.players.values()].some((item) => !item.connected)) {
         return reply(ack, { ok: false, error: 'รอให้ผู้เล่นทุกคนเชื่อมต่อก่อน' })
@@ -231,7 +267,8 @@ export function createGameServer(options = {}) {
       }
 
       assignCharacters(room)
-      room.status = 'playing'
+      startRound(room, Date.now(), options.turnDurationMs)
+      scheduleTurn(room)
       room.lastActiveAt = Date.now()
       reply(ack, { ok: true, state: publicRoomState(room, player.id) })
       broadcastRoom(room)
@@ -242,12 +279,32 @@ export function createGameServer(options = {}) {
       if (!room || !player) return reply(ack, { ok: false, error: 'คุณไม่ได้อยู่ในห้อง' })
       if (room.hostId !== player.id) return reply(ack, { ok: false, error: 'เฉพาะโฮสต์เท่านั้น' })
 
-      room.status = 'waiting'
-      for (const item of room.players.values()) {
-        item.character = null
-        item.assignedCharacter = null
-      }
+      resetRound(room)
+      scheduleTurn(room)
       room.lastActiveAt = Date.now()
+      reply(ack, { ok: true, state: publicRoomState(room, player.id) })
+      broadcastRoom(room)
+    })
+
+    socket.on('requestAnswer', (payload, ack) => {
+      const { room, player } = roomForSocket(socket)
+      if (!room || !player) return reply(ack, { ok: false, error: 'คุณไม่ได้อยู่ในห้อง' })
+      syncExpiredTurn(room)
+      const error = requestAnswer(room, player.id, payload?.turnId)
+      if (error) return reply(ack, { ok: false, error, state: publicRoomState(room, player.id) })
+      room.lastActiveAt = Date.now()
+      scheduleTurn(room)
+      reply(ack, { ok: true, state: publicRoomState(room, player.id) })
+      broadcastRoom(room)
+    })
+
+    socket.on('castVote', (payload, ack) => {
+      const { room, player } = roomForSocket(socket)
+      if (!room || !player) return reply(ack, { ok: false, error: 'คุณไม่ได้อยู่ในห้อง' })
+      const error = castVote(room, player.id, payload)
+      if (error) return reply(ack, { ok: false, error, state: publicRoomState(room, player.id) })
+      room.lastActiveAt = Date.now()
+      scheduleTurn(room)
       reply(ack, { ok: true, state: publicRoomState(room, player.id) })
       broadcastRoom(room)
     })
@@ -266,13 +323,19 @@ export function createGameServer(options = {}) {
     const expiry = Date.now() - 30 * 60 * 1000
     for (const [code, room] of rooms) {
       const hasConnectedPlayer = [...room.players.values()].some((player) => player.connected)
-      if (!hasConnectedPlayer && room.lastActiveAt < expiry) rooms.delete(code)
+      if (!hasConnectedPlayer && room.lastActiveAt < expiry) {
+        clearTimeout(turnTimers.get(code))
+        turnTimers.delete(code)
+        rooms.delete(code)
+      }
     }
   }, 5 * 60 * 1000)
   cleanupTimer.unref()
 
   async function close() {
     clearInterval(cleanupTimer)
+    for (const timer of turnTimers.values()) clearTimeout(timer)
+    turnTimers.clear()
     await new Promise((resolve) => io.close(resolve))
     if (httpServer.listening) {
       await new Promise((resolve, reject) => {

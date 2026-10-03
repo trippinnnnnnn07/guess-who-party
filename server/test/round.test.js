@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { publicRoomState } from '../src/game.js'
+import { assignCharacters, publicRoomState } from '../src/game.js'
 import {
   activePlayerId, advanceExpiredTurn, castVote, handleRoundDeparture,
   publicRoundState, requestAnswer, resetRound, startRound,
@@ -8,12 +8,13 @@ import {
 
 function fixture() {
   const room = {
-    code: 'TEST23', hostId: 'a',
+    code: 'TEST23', hostId: 'a', totalRounds: 1,
     players: new Map(['a', 'b', 'c'].map((id, index) => [id, {
-      id, name: `Player ${id}`, connected: true, character: { name: id },
+      id, name: `Player ${id}`, connected: true, characters: [{ name: `Character ${index}`, imageDataUrl: `image-${index}` }],
       assignedCharacter: { name: `Character ${index}`, imageDataUrl: `image-${index}` },
     }])),
   }
+  assignCharacters(room, () => 0)
   startRound(room, 1000)
   return room
 }
@@ -69,7 +70,7 @@ describe('turn and unanimous vote rules', () => {
     assert.match(castVote(room, 'c', { voteId, correct: true }), /รอบเดิม/)
   })
 
-  it('ends only on unanimous correct and reveals only the winner own answer', () => {
+  it('awards points only on unanimous correct, reveals the solved answer and continues', () => {
     const room = fixture()
     requestAnswer(room, 'a', room.round.turnId, 6000)
     const voteId = room.round.vote.id
@@ -77,12 +78,17 @@ describe('turn and unanimous vote rules', () => {
     assert.equal(room.status, 'playing')
     assert.equal(publicRoomState(room, 'a').players[0].assignedCharacter, null)
     castVote(room, 'c', { voteId, correct: true })
-    assert.equal(room.status, 'finished')
-    assert.equal(room.round.winner.id, 'a')
-    assert.equal(publicRoomState(room, 'a').players[0].assignedCharacter.name, 'Character 0')
+    assert.equal(room.status, 'playing')
+    assert.equal(room.round.finishers[0].id, 'a')
+    assert.equal(room.round.finishers[0].points, 2)
+    assert.ok(publicRoomState(room, 'a').players[0].assignedCharacter)
     assert.equal(publicRoomState(room, 'b').players[1].assignedCharacter, null)
-    assert.equal(advanceExpiredTurn(room, 999_999), false)
-    assert.equal(room.round.deadlineAt, null)
+    assert.equal(activePlayerId(room), 'b')
+    assert.equal(room.match.scores.get('a').total, 2)
+    assert.equal(advanceExpiredTurn(room, room.round.deadlineAt), true)
+    assert.equal(activePlayerId(room), 'c')
+    advanceExpiredTurn(room, room.round.deadlineAt)
+    assert.equal(activePlayerId(room), 'b')
   })
 
   it('rejects other players answering, expired turns, self-votes, duplicates, and non-booleans', () => {
@@ -116,7 +122,7 @@ describe('turn and unanimous vote rules', () => {
     handleRoundDeparture(room, 'c', 38_000)
     assert.equal(room.status, 'waiting')
     assert.equal(room.round, null)
-    assert.equal(room.players.get('b').character, null)
+    assert.deepEqual(room.players.get('b').characters, [null])
   })
 
   it('requires a fresh ballot after a voter leaves instead of awarding a win', () => {

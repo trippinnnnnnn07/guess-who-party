@@ -62,7 +62,7 @@ function Brand({ compact = false }) {
         ?
       </div>
       <div>
-        <strong>หัวใคร ใครรู้? <small className="version-tag">v0.2</small></strong>
+        <strong>หัวใคร ใครรู้? <small className="version-tag">v0.3</small></strong>
         {!compact && <span>เกมทายตัวละครกับแก๊งเพื่อน</span>}
       </div>
     </div>
@@ -94,6 +94,7 @@ function Landing({ onEnter, busy, connected }) {
   const [mode, setMode] = useState('create')
   const [name, setName] = useState(localStorage.getItem('guess-who-party-name') || '')
   const [roomCode, setRoomCode] = useState('')
+  const [totalRounds, setTotalRounds] = useState(3)
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -103,7 +104,7 @@ function Landing({ onEnter, busy, connected }) {
       return onEnter({ localError: 'ใส่รหัสห้องให้ครบก่อนนะ' })
     }
     localStorage.setItem('guess-who-party-name', trimmedName)
-    await onEnter({ mode, name: trimmedName, roomCode })
+    await onEnter({ mode, name: trimmedName, roomCode, totalRounds })
   }
 
   return (
@@ -124,8 +125,8 @@ function Landing({ onEnter, busy, connected }) {
             <em>แต่คำตอบอยู่ที่เพื่อน</em>
           </h1>
           <p>
-            สร้างห้อง ชวนเพื่อน แล้วส่งตัวละครลับคนละหนึ่งตัว
-            ที่เหลือปล่อยให้เราสุ่มให้เอง
+            เลือกจำนวนรอบ ชวนเพื่อน ส่งตัวละครลับให้ครบ
+            แล้วแข่งทายสะสมคะแนน ใครรู้ก่อนก็ได้แต้มมากกว่า
           </p>
 
           <div className="how-it-works" aria-label="วิธีเล่น">
@@ -174,6 +175,16 @@ function Landing({ onEnter, busy, connected }) {
               autoComplete="nickname"
               autoFocus
             />
+
+            {mode === 'create' && (
+              <>
+                <label htmlFor="total-rounds">จำนวนรอบที่เล่น</label>
+                <select id="total-rounds" value={totalRounds} onChange={(event) => setTotalRounds(Number(event.target.value))}>
+                  {Array.from({ length: 10 }, (_, index) => <option key={index} value={index + 1}>{index + 1} รอบ</option>)}
+                </select>
+                <p className="helper-copy">ทุกคนเตรียมตัวละครคนละ {totalRounds} ตัวก่อนเริ่มเกม</p>
+              </>
+            )}
 
             {mode === 'join' && (
               <>
@@ -258,7 +269,7 @@ function PlayerList({ room }) {
             {player.isHost && <Crown className="host-icon" size={19} aria-label="โฮสต์" />}
             <div className={`ready-dot ${player.isReady ? 'ready-dot--done' : ''}`}>
               {player.isReady ? <Check size={15} /> : <span />}
-              {player.isReady ? 'ส่งแล้ว' : 'กำลังเลือก'}
+              {player.submittedCount}/{room.totalRounds} ตัว
             </div>
           </div>
         ))}
@@ -267,18 +278,12 @@ function PlayerList({ room }) {
   )
 }
 
-function CharacterForm({ room, onSubmit, busy }) {
-  const [characterName, setCharacterName] = useState(room.myCharacter?.name || '')
-  const [imageDataUrl, setImageDataUrl] = useState(room.myCharacter?.imageDataUrl || '')
+function CharacterForm({ character, roundIndex, onSubmit, busy }) {
+  const [characterName, setCharacterName] = useState(character?.name || '')
+  const [imageDataUrl, setImageDataUrl] = useState(character?.imageDataUrl || '')
   const [fileError, setFileError] = useState('')
   const fileInputRef = useRef(null)
 
-  useEffect(() => {
-    if (room.myCharacter) {
-      setCharacterName(room.myCharacter.name)
-      setImageDataUrl(room.myCharacter.imageDataUrl)
-    }
-  }, [room.myCharacter])
 
   function selectImage(file) {
     setFileError('')
@@ -308,24 +313,24 @@ function CharacterForm({ room, onSubmit, busy }) {
       setFileError('ใส่ชื่อและเลือกรูปตัวละครให้ครบก่อนนะ')
       return
     }
-    await onSubmit({ name: characterName.trim(), imageDataUrl })
+    await onSubmit({ name: characterName.trim(), imageDataUrl, roundIndex })
   }
 
   return (
     <section className="panel character-panel">
       <div className="section-heading">
         <div>
-          <span className="section-kicker">ภารกิจของคุณ</span>
-          <h2>{room.myCharacter ? 'เปลี่ยนใจได้เสมอ' : 'ส่งตัวละครลับ'}</h2>
+          <span className="section-kicker">ตัวละครลับ · รอบที่ {roundIndex + 1}</span>
+          <h2>{character ? 'บันทึกแล้ว ✓' : 'เลือกตัวละครให้เพื่อน'}</h2>
         </div>
         <Sparkles className="heading-sparkle" size={25} />
       </div>
       <p className="helper-copy">เลือกตัวละครที่เพื่อนน่าจะรู้จัก คนอื่นจะยังไม่เห็นจนกว่าเกมจะเริ่ม</p>
 
       <form onSubmit={handleSubmit}>
-        <label htmlFor="character-name">ชื่อตัวละคร</label>
+        <label htmlFor={`character-name-${roundIndex}`}>ชื่อตัวละครรอบที่ {roundIndex + 1}</label>
         <input
-          id="character-name"
+          id={`character-name-${roundIndex}`}
           value={characterName}
           onChange={(event) => setCharacterName(event.target.value)}
           maxLength={50}
@@ -336,6 +341,7 @@ function CharacterForm({ room, onSubmit, busy }) {
         <button
           className={`upload-zone ${imageDataUrl ? 'upload-zone--filled' : ''}`}
           type="button"
+          aria-label={`เลือกรูปตัวละครรอบที่ ${roundIndex + 1}`}
           onClick={() => fileInputRef.current?.click()}
           onDragOver={(event) => event.preventDefault()}
           onDrop={handleDrop}
@@ -364,7 +370,7 @@ function CharacterForm({ room, onSubmit, busy }) {
 
         <button className="secondary-button" type="submit" disabled={busy}>
           {busy ? <LoaderCircle className="spin" size={19} /> : <Check size={19} />}
-          {room.myCharacter ? 'อัปเดตตัวละคร' : 'ยืนยันตัวละครนี้'}
+          {character ? `อัปเดตตัวละครรอบที่ ${roundIndex + 1}` : `ยืนยันตัวละครรอบที่ ${roundIndex + 1}`}
         </button>
       </form>
     </section>
@@ -388,8 +394,21 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
         </div>
 
         <div className="lobby__grid">
-          <PlayerList room={room} />
-          <CharacterForm room={room} onSubmit={onSubmitCharacter} busy={busy} />
+          <div className="lobby-summary">
+            <PlayerList room={room} />
+            <section className="panel match-rules">
+              <span className="section-kicker">ตั้งค่าโดยโฮสต์</span>
+              <h2>เล่นทั้งหมด {room.totalRounds} รอบ</h2>
+              <p>ส่งตัวละครคนละ {room.totalRounds} ตัว แยกตามรอบ แล้วกดยืนยันแต่ละตัวให้ครบก่อนเริ่ม</p>
+              <p>คะแนนเรียงตามอันดับทายถูก: {Array.from({ length: room.playerCount }, (_, i) => room.playerCount - i - 1).join(' · ')} แต้ม</p>
+              <p className="helper-copy">คนสุดท้ายได้ 0 แต้มแล้วจบรอบทันที พักดูผล 6 วินาที ก่อนเริ่มรอบถัดไปอัตโนมัติ</p>
+            </section>
+          </div>
+          <div className="character-submissions">
+            {Array.from({ length: room.totalRounds }, (_, index) => (
+              <CharacterForm key={index} character={room.myCharacters[index]} roundIndex={index} onSubmit={onSubmitCharacter} busy={busy || !connected} />
+            ))}
+          </div>
         </div>
 
         <section className="start-bar">
@@ -401,12 +420,12 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
                 : !room.allConnected
                   ? 'มีเพื่อนหลุดการเชื่อมต่อชั่วคราว'
                   : !room.allReady
-                    ? `${room.players.filter((player) => player.isReady).length}/${room.playerCount} คนส่งตัวละครแล้ว`
+                    ? `${room.players.filter((player) => player.isReady).length}/${room.playerCount} คนส่งตัวละครครบทุกรอบแล้ว`
                     : 'ได้เวลาสุ่มตัวละครขึ้นหัว'}
             </span>
           </div>
           {me?.isHost ? (
-            <button className="primary-button start-button" type="button" disabled={!canStart || busy} onClick={onStart}>
+            <button className="primary-button start-button" type="button" disabled={!canStart || busy || !connected} onClick={onStart}>
               {busy ? <LoaderCircle className="spin" size={20} /> : <Play size={20} fill="currentColor" />}
               เริ่มเกม
             </button>
@@ -485,12 +504,12 @@ function App() {
     return room.status === 'playing' || room.status === 'finished' ? 'game' : 'lobby'
   }, [room])
 
-  async function enterRoom({ mode, name, roomCode, localError }) {
+  async function enterRoom({ mode, name, roomCode, totalRounds, localError }) {
     if (localError) return setMessage(localError)
     setBusy(true)
     setMessage('')
     const event = mode === 'create' ? 'createRoom' : 'joinRoom'
-    const response = await emitWithAck(event, { name, roomCode })
+    const response = await emitWithAck(event, { name, roomCode, totalRounds })
     if (response?.ok) {
       sessionRef.current = response.session
       saveSession(response.session)

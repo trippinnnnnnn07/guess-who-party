@@ -1,4 +1,4 @@
-import { publicRoundState } from './round.js'
+import { INTERMISSION_MS, publicRoundState } from './round.js'
 
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
@@ -31,44 +31,58 @@ export function createDerangement(values, random = Math.random) {
   return result
 }
 
-export function assignCharacters(room, random = Math.random) {
+export function assignCharacters(room, random = Math.random, intermissionMs = INTERMISSION_MS) {
   const players = [...room.players.values()]
   const ownerIds = players.map((player) => player.id)
-  const assignedOwnerIds = createDerangement(ownerIds, random)
+  room.match = {
+    currentRound: 0, intermissionMs, results: [],
+    scores: new Map(players.map(({ id, name }) => [id, { id, name, total: 0, rounds: Array(room.totalRounds).fill(null) }])),
+    // Future answers stay exclusively on the server; each submitted slot is used once.
+    assignments: Array.from({ length: room.totalRounds }, (_, roundIndex) => {
+      const assignedOwnerIds = createDerangement(ownerIds, random)
+      return new Map(players.map((player, index) => [player.id, {
+        ...room.players.get(assignedOwnerIds[index]).characters[roundIndex],
+      }]))
+    }),
+  }
+}
 
-  players.forEach((player, index) => {
-    const owner = room.players.get(assignedOwnerIds[index])
-    player.assignedCharacter = {
-      name: owner.character.name,
-      imageDataUrl: owner.character.imageDataUrl,
-    }
-  })
+export function isReady(player, totalRounds) {
+  return Array.from({ length: totalRounds }, (_, index) => player.characters[index]).every(Boolean)
 }
 
 export function publicRoomState(room, viewerId) {
   const viewer = room.players.get(viewerId)
+  const standings = room.match ? [...room.match.scores.values()]
+    .map((entry) => ({ ...entry, departed: !room.players.has(entry.id) }))
+    .sort((a, b) => b.total - a.total) : []
+  const revealAll = ['intermission', 'finished'].includes(room.round?.phase)
 
   return {
     code: room.code,
     status: room.status,
+    totalRounds: room.totalRounds,
+    standings,
+    results: room.match?.results ?? [],
+    winnerIds: room.status === 'finished' ? standings.filter((entry) => entry.total === standings[0]?.total).map((entry) => entry.id) : [],
     round: publicRoundState(room, viewerId),
     hostId: room.hostId,
     playerCount: room.players.size,
-    allReady: [...room.players.values()].every((player) => Boolean(player.character)),
+    allReady: [...room.players.values()].every((player) => isReady(player, room.totalRounds)),
     allConnected: [...room.players.values()].every((player) => player.connected),
-    myCharacter:
-      room.status === 'waiting' && viewer?.character
-        ? { ...viewer.character }
-        : null,
+    myCharacters: room.status === 'waiting' ? viewer?.characters ?? [] : [],
     players: [...room.players.values()].map((player) => ({
       id: player.id,
       name: player.name,
       isHost: player.id === room.hostId,
       connected: player.connected,
-      isReady: Boolean(player.character),
+      isReady: isReady(player, room.totalRounds),
+      submittedCount: player.characters.filter(Boolean).length,
+      score: room.match?.scores.get(player.id)?.total ?? 0,
+      roundResult: room.round?.finishers.find((entry) => entry.id === player.id) ?? null,
       assignedCharacter:
         (room.status === 'playing' || room.status === 'finished') &&
-        (player.id !== viewerId || room.round?.winner?.id === viewerId)
+        (player.id !== viewerId || revealAll || room.round?.finishers.some((entry) => entry.id === viewerId))
           ? player.assignedCharacter
           : null,
       isMe: player.id === viewerId,

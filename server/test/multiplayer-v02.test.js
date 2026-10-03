@@ -27,7 +27,7 @@ function nextState(client, predicate) {
   })
 }
 
-describe('v0.2 socket flow', { timeout: 10_000 }, () => {
+describe('timer, voting and session socket flow', { timeout: 10_000 }, () => {
   let server
   const sockets = []
   async function connect(url) {
@@ -96,16 +96,17 @@ describe('v0.2 socket flow', { timeout: 10_000 }, () => {
     assert.equal((await ack(guest, 'castVote', { voteId, correct: true })).ok, false)
     voteId = split.state.round.vote.id
     await ack(guest, 'castVote', { voteId, correct: true })
-    const hostWin = nextState(host, (state) => state.status === 'finished')
+    const hostWin = nextState(host, (state) => state.round?.finishers.length === 1)
     const won = await ack(third, 'castVote', { voteId, correct: true })
-    assert.equal(won.state.round.winner.id, sessions[0].playerId)
+    assert.equal(won.state.round.finishers[0].id, sessions[0].playerId)
+    assert.equal(won.state.round.finishers[0].points, 2)
     const hostState = await hostWin
     assert.ok(hostState.players.find((player) => player.isMe).assignedCharacter)
     assert.equal(won.state.players.find((player) => player.isMe).assignedCharacter, null)
     host.close()
     const replacement = await connect(url)
     const restored = await ack(replacement, 'rejoinRoom', sessions[0])
-    assert.equal(restored.state.status, 'finished')
+    assert.equal(restored.state.status, 'playing')
     assert.ok(restored.state.players.find((player) => player.isMe).assignedCharacter)
     assert.equal((await ack(replacement, 'startGame')).ok, false)
     const reset = await ack(replacement, 'resetGame')
@@ -130,7 +131,7 @@ describe('v0.2 socket flow', { timeout: 10_000 }, () => {
     assert.equal(result.state.round.phase, 'turn')
     assert.equal(result.state.round.activePlayerId, sessions[0].playerId)
     assert.equal(result.state.round.notice.type, 'wrong')
-    assert.equal(result.state.round.winner, null)
+    assert.deepEqual(result.state.round.finishers, [])
   })
 
   it('cancels a pending vote on reset, refuses stale votes, and prevents non-host resets', async () => {

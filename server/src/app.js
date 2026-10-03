@@ -8,6 +8,7 @@ import { Server } from 'socket.io'
 import {
   assignCharacters,
   createRoomCode,
+  isReady,
   normalizeRoomCode,
   publicRoomState,
 } from './game.js'
@@ -89,7 +90,7 @@ export function createGameServer(options = {}) {
   function scheduleTurn(room) {
     clearTimeout(turnTimers.get(room.code))
     turnTimers.delete(room.code)
-    if (room.status !== 'playing' || room.round?.phase !== 'turn') return
+    if (room.status !== 'playing' || !['turn', 'intermission'].includes(room.round?.phase)) return
     const timer = setTimeout(() => {
       turnTimers.delete(room.code)
       if (!rooms.has(room.code)) return
@@ -153,6 +154,10 @@ export function createGameServer(options = {}) {
 
   io.on('connection', (socket) => {
     socket.on('createRoom', (payload, ack) => {
+      const totalRounds = payload?.totalRounds ?? 1
+      if (!Number.isInteger(totalRounds) || totalRounds < 1 || totalRounds > 10) {
+        return reply(ack, { ok: false, error: 'เลือกจำนวนรอบตั้งแต่ 1 ถึง 10 รอบ' })
+      }
       const name = cleanName(payload?.name)
       if (!name) return reply(ack, { ok: false, error: 'กรุณาใส่ชื่อผู้เล่น' })
 
@@ -165,13 +170,14 @@ export function createGameServer(options = {}) {
         name,
         connected: true,
         socketId: socket.id,
-        character: null,
+        characters: Array(totalRounds).fill(null),
         assignedCharacter: null,
       }
       const room = {
         code,
         hostId: playerId,
         status: 'waiting',
+        totalRounds,
         players: new Map([[playerId, player]]),
         createdAt: Date.now(),
         lastActiveAt: Date.now(),
@@ -205,7 +211,7 @@ export function createGameServer(options = {}) {
         name,
         connected: true,
         socketId: socket.id,
-        character: null,
+        characters: Array(room.totalRounds).fill(null),
         assignedCharacter: null,
       }
       room.players.set(playerId, player)
@@ -244,10 +250,14 @@ export function createGameServer(options = {}) {
       if (!room || !player) return reply(ack, { ok: false, error: 'คุณไม่ได้อยู่ในห้อง' })
       if (room.status !== 'waiting') return reply(ack, { ok: false, error: 'เกมเริ่มแล้ว' })
 
+      const roundIndex = payload?.roundIndex ?? 0
+      if (!Number.isInteger(roundIndex) || roundIndex < 0 || roundIndex >= room.totalRounds) {
+        return reply(ack, { ok: false, error: 'หมายเลขรอบไม่ถูกต้อง' })
+      }
       const validated = validateCharacter(payload)
       if (validated.error) return reply(ack, { ok: false, error: validated.error })
 
-      player.character = validated.character
+      player.characters[roundIndex] = validated.character
       room.lastActiveAt = Date.now()
       reply(ack, { ok: true, state: publicRoomState(room, player.id) })
       broadcastRoom(room)
@@ -262,11 +272,11 @@ export function createGameServer(options = {}) {
       if ([...room.players.values()].some((item) => !item.connected)) {
         return reply(ack, { ok: false, error: 'รอให้ผู้เล่นทุกคนเชื่อมต่อก่อน' })
       }
-      if ([...room.players.values()].some((item) => !item.character)) {
-        return reply(ack, { ok: false, error: 'รอให้ทุกคนส่งตัวละครก่อน' })
+      if ([...room.players.values()].some((item) => !isReady(item, room.totalRounds))) {
+        return reply(ack, { ok: false, error: 'รอให้ทุกคนส่งตัวละครครบทุกรอบก่อน' })
       }
 
-      assignCharacters(room)
+      assignCharacters(room, Math.random, options.intermissionMs)
       startRound(room, Date.now(), options.turnDurationMs)
       scheduleTurn(room)
       room.lastActiveAt = Date.now()

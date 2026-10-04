@@ -1,4 +1,5 @@
 import { INTERMISSION_MS, publicRoundState } from './round.js'
+import { publicQuizRoom } from './odd-game.js'
 
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
@@ -52,6 +53,7 @@ export function isReady(player, totalRounds) {
 }
 
 export function publicRoomState(room, viewerId) {
+  if (room.gameMode === 'odd') return publicQuizRoom(room, viewerId)
   const viewer = room.players.get(viewerId)
   const standings = room.match ? [...room.match.scores.values()]
     .map((entry) => ({ ...entry, departed: !room.players.has(entry.id) }))

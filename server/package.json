@@ -1,6 +1,6 @@
 {
   "name": "guess-who-party-server",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,8 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.117.2",
+    "dotenv": "^16.6.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "socket.io": "^4.8.1"

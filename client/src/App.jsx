@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { io } from 'socket.io-client'
 import Game from './Game.jsx'
+import QuizGame from './QuizGame.jsx'
+import QuizAccount, { useQuizAccount } from './QuizAccount.jsx'
+import QuestionBank from './QuestionBank.jsx'
+import { accessToken } from './quiz-client.js'
 import {
   Check,
   Copy,
@@ -43,15 +47,24 @@ function clearSession() {
 }
 
 function emitWithAck(event, payload = {}) {
-  if (!socket.connected) return Promise.resolve({ ok: false, error: 'กำลังเชื่อมต่อใหม่ กรุณารอสักครู่' })
-  return new Promise((resolve) => {
-    socket.timeout(8_000).emit(event, payload, (error, response) => {
-      if (error) {
-        resolve({ ok: false, error: 'เซิร์ฟเวอร์ไม่ตอบสนอง กรุณาลองอีกครั้ง' })
-      } else {
-        resolve(response)
-      }
+  if (!socket.connected)
+    return Promise.resolve({
+      ok: false,
+      error: 'กำลังเชื่อมต่อใหม่ กรุณารอสักครู่',
     })
+  return new Promise((resolve) => {
+    socket
+      .timeout(event === 'quizStart' ? 60_000 : 20_000)
+      .emit(event, payload, (error, response) => {
+        if (error) {
+          resolve({
+            ok: false,
+            error: 'เซิร์ฟเวอร์ไม่ตอบสนอง กรุณาลองอีกครั้ง',
+          })
+        } else {
+          resolve(response)
+        }
+      })
   })
 }
 
@@ -62,7 +75,9 @@ function Brand({ compact = false }) {
         ?
       </div>
       <div>
-        <strong>หัวใคร ใครรู้? <small className="version-tag">v0.3</small></strong>
+        <strong>
+          หัวใคร ใครรู้? <small className="version-tag">v0.4</small>
+        </strong>
         {!compact && <span>เกมทายตัวละครกับแก๊งเพื่อน</span>}
       </div>
     </div>
@@ -90,11 +105,18 @@ function Toast({ message, onClose }) {
   )
 }
 
-function Landing({ onEnter, busy, connected }) {
+function Landing({ onEnter, busy, connected, account, onBank }) {
   const [mode, setMode] = useState('create')
-  const [name, setName] = useState(localStorage.getItem('guess-who-party-name') || '')
+  const [name, setName] = useState(
+    localStorage.getItem('guess-who-party-name') || '',
+  )
   const [roomCode, setRoomCode] = useState('')
   const [totalRounds, setTotalRounds] = useState(3)
+  const [gameMode, setGameMode] = useState('classic')
+  const [questionCount, setQuestionCount] = useState(3)
+  const [blindSeconds, setBlindSeconds] = useState(60)
+  const [hintSeconds, setHintSeconds] = useState(30)
+  const [categoryIds, setCategoryIds] = useState([])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -104,7 +126,14 @@ function Landing({ onEnter, busy, connected }) {
       return onEnter({ localError: 'ใส่รหัสห้องให้ครบก่อนนะ' })
     }
     localStorage.setItem('guess-who-party-name', trimmedName)
-    await onEnter({ mode, name: trimmedName, roomCode, totalRounds })
+    await onEnter({
+      mode,
+      name: trimmedName,
+      roomCode,
+      totalRounds,
+      gameMode,
+      settings: { questionCount, blindSeconds, hintSeconds, categoryIds },
+    })
   }
 
   return (
@@ -113,6 +142,7 @@ function Landing({ onEnter, busy, connected }) {
         <Brand />
         <ConnectionBadge connected={connected} />
       </header>
+      <QuizAccount account={account} onBank={onBank} />
 
       <main className="hero">
         <section className="hero__copy">
@@ -120,30 +150,48 @@ function Landing({ onEnter, busy, connected }) {
             <Sparkles size={16} /> คืนนี้ใครจะโดนทายก่อน?
           </div>
           <h1>
-            ตัวละครอยู่บนหัว
+            {gameMode === 'odd' ? 'สี่คนนี้มีใคร' : 'ตัวละครอยู่บนหัว'}
             <br />
-            <em>แต่คำตอบอยู่ที่เพื่อน</em>
+            <em>
+              {gameMode === 'odd' ? 'ต่างจากเพื่อน?' : 'แต่คำตอบอยู่ที่เพื่อน'}
+            </em>
           </h1>
           <p>
-            เลือกจำนวนรอบ ชวนเพื่อน ส่งตัวละครลับให้ครบ
-            แล้วแข่งทายสะสมคะแนน ใครรู้ก่อนก็ได้แต้มมากกว่า
+            {gameMode === 'odd'
+              ? 'มองให้ดี เลือกให้ชัวร์ ตอบได้ครั้งเดียว จะตอบก่อนเอา 3 แต้ม หรือรอคำใบ้ลุ้น 1 แต้ม?'
+              : 'เลือกจำนวนรอบ ชวนเพื่อน ส่งตัวละครลับให้ครบ แล้วแข่งทายสะสมคะแนน ใครรู้ก่อนก็ได้แต้มมากกว่า'}
           </p>
 
           <div className="how-it-works" aria-label="วิธีเล่น">
-            <div><b>01</b><span>รวมแก๊ง</span></div>
-            <div><b>02</b><span>ส่งตัวละคร</span></div>
-            <div><b>03</b><span>ถามให้เจอ</span></div>
+            <div>
+              <b>01</b>
+              <span>รวมแก๊ง</span>
+            </div>
+            <div>
+              <b>02</b>
+              <span>{gameMode === 'odd' ? 'หาคนที่ต่าง' : 'ส่งตัวละคร'}</span>
+            </div>
+            <div>
+              <b>03</b>
+              <span>{gameMode === 'odd' ? 'สะสมแต้ม' : 'ถามให้เจอ'}</span>
+            </div>
           </div>
         </section>
 
         <section className="join-card">
           <div className="join-card__art" aria-hidden="true">
             <div className="mini-card mini-card--one">?</div>
-            <div className="mini-card mini-card--two"><Sparkles /></div>
+            <div className="mini-card mini-card--two">
+              <Sparkles />
+            </div>
             <div className="mini-card mini-card--three">!</div>
           </div>
 
-          <div className="mode-tabs" role="tablist" aria-label="เลือกวิธีเข้าเกม">
+          <div
+            className="mode-tabs"
+            role="tablist"
+            aria-label="เลือกวิธีเข้าเกม"
+          >
             <button
               type="button"
               className={mode === 'create' ? 'active' : ''}
@@ -178,11 +226,92 @@ function Landing({ onEnter, busy, connected }) {
 
             {mode === 'create' && (
               <>
-                <label htmlFor="total-rounds">จำนวนรอบที่เล่น</label>
-                <select id="total-rounds" value={totalRounds} onChange={(event) => setTotalRounds(Number(event.target.value))}>
-                  {Array.from({ length: 10 }, (_, index) => <option key={index} value={index + 1}>{index + 1} รอบ</option>)}
+                <label htmlFor="game-mode">เลือกเกม</label>
+                <select
+                  id="game-mode"
+                  value={gameMode}
+                  onChange={(event) => setGameMode(event.target.value)}
+                >
+                  <option value="classic">
+                    หัวใคร ใครรู้? · ทายตัวละครบนหัว
+                  </option>
+                  <option value="odd">ใครต่างจากเพื่อน · เลือก 1 ใน 4</option>
                 </select>
-                <p className="helper-copy">ทุกคนเตรียมตัวละครคนละ {totalRounds} ตัวก่อนเริ่มเกม</p>
+                {gameMode === 'classic' ? (
+                  <>
+                    <label htmlFor="total-rounds">จำนวนรอบที่เล่น</label>
+                    <select
+                      id="total-rounds"
+                      value={totalRounds}
+                      onChange={(event) =>
+                        setTotalRounds(Number(event.target.value))
+                      }
+                    >
+                      {Array.from({ length: 10 }, (_, index) => (
+                        <option key={index} value={index + 1}>
+                          {index + 1} รอบ
+                        </option>
+                      ))}
+                    </select>
+                    <p className="helper-copy">
+                      ทุกคนเตรียมตัวละครคนละ {totalRounds} ตัวก่อนเริ่มเกม
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    {!account.config?.configured && (
+                      <p className="quiz-notice">
+                        {account.config?.demo
+                          ? 'โหมดสาธิต: มีตัวละครสมมติ 3 ข้อ'
+                          : 'ยังไม่ได้เชื่อมต่อ Supabase · ดูวิธีตั้งค่าใน README'}
+                      </p>
+                    )}
+                    <label htmlFor="quiz-count">จำนวนข้อ</label>
+                    <input
+                      id="quiz-count"
+                      type="number"
+                      min="1"
+                      max="20"
+                      required
+                      value={questionCount}
+                      onChange={(e) => setQuestionCount(Number(e.target.value))}
+                    />
+                    <TimeFields
+                      title="ช่วงไม่มีคำใบ้ · 3 แต้ม"
+                      id="blind-time"
+                      value={blindSeconds}
+                      onChange={setBlindSeconds}
+                    />
+                    <TimeFields
+                      title="ช่วงเปิดคำใบ้ · 1 แต้ม"
+                      id="hint-time"
+                      value={hintSeconds}
+                      onChange={setHintSeconds}
+                    />
+                    <fieldset className="quiz-category-picks">
+                      <legend>หมวดหมู่ · ไม่เลือก = ทุกหมวด</legend>
+                      {account.categories.map((c) => (
+                        <label className="checkbox-label" key={c.id}>
+                          <input
+                            type="checkbox"
+                            checked={categoryIds.includes(c.id)}
+                            onChange={(e) =>
+                              setCategoryIds((ids) =>
+                                e.target.checked
+                                  ? [...ids, c.id]
+                                  : ids.filter((id) => id !== c.id),
+                              )
+                            }
+                          />
+                          {c.name}
+                        </label>
+                      ))}
+                    </fieldset>
+                    <p className="helper-copy">
+                      เวลาคงที่ทั้งเกม ช่วงละ 5 วินาที–10 นาที
+                    </p>
+                  </>
+                )}
               </>
             )}
 
@@ -193,7 +322,11 @@ function Landing({ onEnter, busy, connected }) {
                   id="room-code"
                   className="code-input"
                   value={roomCode}
-                  onChange={(event) => setRoomCode(event.target.value.toUpperCase().replace(/\s/g, ''))}
+                  onChange={(event) =>
+                    setRoomCode(
+                      event.target.value.toUpperCase().replace(/\s/g, ''),
+                    )
+                  }
                   placeholder="ABC123"
                   maxLength={6}
                   autoComplete="off"
@@ -201,9 +334,30 @@ function Landing({ onEnter, busy, connected }) {
               </>
             )}
 
-            <button className="primary-button" type="submit" disabled={busy || !connected}>
-              {busy ? <LoaderCircle className="spin" size={20} /> : mode === 'create' ? <Plus size={20} /> : <LogIn size={20} />}
-              {busy ? 'กำลังเตรียมห้อง...' : mode === 'create' ? 'สร้างห้องใหม่' : 'ไปที่ห้องนี้'}
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={
+                busy ||
+                !connected ||
+                (mode === 'create' &&
+                  gameMode === 'odd' &&
+                  !account.config?.configured &&
+                  !account.config?.demo)
+              }
+            >
+              {busy ? (
+                <LoaderCircle className="spin" size={20} />
+              ) : mode === 'create' ? (
+                <Plus size={20} />
+              ) : (
+                <LogIn size={20} />
+              )}
+              {busy
+                ? 'กำลังเตรียมห้อง...'
+                : mode === 'create'
+                  ? 'สร้างห้องใหม่'
+                  : 'ไปที่ห้องนี้'}
             </button>
           </form>
 
@@ -217,6 +371,40 @@ function Landing({ onEnter, busy, connected }) {
         <span>เราเก็บห้องไว้ชั่วคราวระหว่างเล่นเท่านั้น</span>
       </footer>
     </div>
+  )
+}
+
+function TimeFields({ title, id, value, onChange }) {
+  return (
+    <fieldset className="quiz-time-fields">
+      <legend>{title}</legend>
+      <label htmlFor={`${id}-minutes`}>
+        นาที
+        <input
+          id={`${id}-minutes`}
+          type="number"
+          min="0"
+          max="10"
+          required
+          value={Math.floor(value / 60)}
+          onChange={(e) => onChange(Number(e.target.value) * 60 + (value % 60))}
+        />
+      </label>
+      <label htmlFor={`${id}-seconds`}>
+        วินาที
+        <input
+          id={`${id}-seconds`}
+          type="number"
+          min="0"
+          max="59"
+          required
+          value={value % 60}
+          onChange={(e) =>
+            onChange(Math.floor(value / 60) * 60 + Number(e.target.value))
+          }
+        />
+      </label>
+    </fieldset>
   )
 }
 
@@ -234,12 +422,22 @@ function RoomTopbar({ room, connected, onLeave }) {
       <Brand compact />
       <div className="room-topbar__actions">
         <ConnectionBadge connected={connected} />
-        <button className="room-code" type="button" onClick={copyCode} title="คัดลอกรหัสห้อง">
+        <button
+          className="room-code"
+          type="button"
+          onClick={copyCode}
+          title="คัดลอกรหัสห้อง"
+        >
           <span>รหัสห้อง</span>
           <b>{room.code}</b>
           {copied ? <Check size={17} /> : <Copy size={17} />}
         </button>
-        <button className="icon-button" type="button" onClick={onLeave} title="ออกจากห้อง">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onLeave}
+          title="ออกจากห้อง"
+        >
           <LogOut size={19} />
         </button>
       </div>
@@ -255,19 +453,36 @@ function PlayerList({ room }) {
           <span className="section-kicker">ผู้เล่นในห้อง</span>
           <h2>แก๊งนี้มี {room.playerCount} คน</h2>
         </div>
-        <div className="count-badge"><Users size={16} /> {room.playerCount}</div>
+        <div className="count-badge">
+          <Users size={16} /> {room.playerCount}
+        </div>
       </div>
 
       <div className="player-list">
         {room.players.map((player, index) => (
-          <div className={`player-row ${!player.connected ? 'player-row--offline' : ''}`} key={player.id}>
-            <div className={`avatar avatar--${(index % 4) + 1}`}>{player.name.charAt(0).toUpperCase()}</div>
-            <div className="player-row__name">
-              <strong>{player.name} {player.isMe && <span>(คุณ)</span>}</strong>
-              <small>{player.connected ? 'พร้อมอยู่ในห้อง' : 'หลุดการเชื่อมต่อชั่วคราว'}</small>
+          <div
+            className={`player-row ${!player.connected ? 'player-row--offline' : ''}`}
+            key={player.id}
+          >
+            <div className={`avatar avatar--${(index % 4) + 1}`}>
+              {player.name.charAt(0).toUpperCase()}
             </div>
-            {player.isHost && <Crown className="host-icon" size={19} aria-label="โฮสต์" />}
-            <div className={`ready-dot ${player.isReady ? 'ready-dot--done' : ''}`}>
+            <div className="player-row__name">
+              <strong>
+                {player.name} {player.isMe && <span>(คุณ)</span>}
+              </strong>
+              <small>
+                {player.connected
+                  ? 'พร้อมอยู่ในห้อง'
+                  : 'หลุดการเชื่อมต่อชั่วคราว'}
+              </small>
+            </div>
+            {player.isHost && (
+              <Crown className="host-icon" size={19} aria-label="โฮสต์" />
+            )}
+            <div
+              className={`ready-dot ${player.isReady ? 'ready-dot--done' : ''}`}
+            >
               {player.isReady ? <Check size={15} /> : <span />}
               {player.submittedCount}/{room.totalRounds} ตัว
             </div>
@@ -280,15 +495,20 @@ function PlayerList({ room }) {
 
 function CharacterForm({ character, roundIndex, onSubmit, busy }) {
   const [characterName, setCharacterName] = useState(character?.name || '')
-  const [imageDataUrl, setImageDataUrl] = useState(character?.imageDataUrl || '')
+  const [imageDataUrl, setImageDataUrl] = useState(
+    character?.imageDataUrl || '',
+  )
   const [fileError, setFileError] = useState('')
   const fileInputRef = useRef(null)
-
 
   function selectImage(file) {
     setFileError('')
     if (!file) return
-    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+    if (
+      !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(
+        file.type,
+      )
+    ) {
       setFileError('รองรับเฉพาะ PNG, JPG, WEBP และ GIF')
       return
     }
@@ -298,7 +518,8 @@ function CharacterForm({ character, roundIndex, onSubmit, busy }) {
     }
     const reader = new FileReader()
     reader.onload = () => setImageDataUrl(String(reader.result))
-    reader.onerror = () => setFileError('อ่านไฟล์นี้ไม่สำเร็จ ลองเลือกรูปอื่นนะ')
+    reader.onerror = () =>
+      setFileError('อ่านไฟล์นี้ไม่สำเร็จ ลองเลือกรูปอื่นนะ')
     reader.readAsDataURL(file)
   }
 
@@ -320,15 +541,21 @@ function CharacterForm({ character, roundIndex, onSubmit, busy }) {
     <section className="panel character-panel">
       <div className="section-heading">
         <div>
-          <span className="section-kicker">ตัวละครลับ · รอบที่ {roundIndex + 1}</span>
+          <span className="section-kicker">
+            ตัวละครลับ · รอบที่ {roundIndex + 1}
+          </span>
           <h2>{character ? 'บันทึกแล้ว ✓' : 'เลือกตัวละครให้เพื่อน'}</h2>
         </div>
         <Sparkles className="heading-sparkle" size={25} />
       </div>
-      <p className="helper-copy">เลือกตัวละครที่เพื่อนน่าจะรู้จัก คนอื่นจะยังไม่เห็นจนกว่าเกมจะเริ่ม</p>
+      <p className="helper-copy">
+        เลือกตัวละครที่เพื่อนน่าจะรู้จัก คนอื่นจะยังไม่เห็นจนกว่าเกมจะเริ่ม
+      </p>
 
       <form onSubmit={handleSubmit}>
-        <label htmlFor={`character-name-${roundIndex}`}>ชื่อตัวละครรอบที่ {roundIndex + 1}</label>
+        <label htmlFor={`character-name-${roundIndex}`}>
+          ชื่อตัวละครรอบที่ {roundIndex + 1}
+        </label>
         <input
           id={`character-name-${roundIndex}`}
           value={characterName}
@@ -349,11 +576,15 @@ function CharacterForm({ character, roundIndex, onSubmit, busy }) {
           {imageDataUrl ? (
             <>
               <img src={imageDataUrl} alt="ตัวอย่างตัวละครที่เลือก" />
-              <span className="upload-zone__change"><ImageIcon size={17} /> เปลี่ยนรูป</span>
+              <span className="upload-zone__change">
+                <ImageIcon size={17} /> เปลี่ยนรูป
+              </span>
             </>
           ) : (
             <>
-              <span className="upload-icon"><UploadCloud size={27} /></span>
+              <span className="upload-icon">
+                <UploadCloud size={27} />
+              </span>
               <strong>คลิกหรือลากรูปมาวาง</strong>
               <small>PNG, JPG, WEBP หรือ GIF • ไม่เกิน 3 MB</small>
             </>
@@ -369,8 +600,14 @@ function CharacterForm({ character, roundIndex, onSubmit, busy }) {
         {fileError && <p className="field-error">{fileError}</p>}
 
         <button className="secondary-button" type="submit" disabled={busy}>
-          {busy ? <LoaderCircle className="spin" size={19} /> : <Check size={19} />}
-          {character ? `อัปเดตตัวละครรอบที่ ${roundIndex + 1}` : `ยืนยันตัวละครรอบที่ ${roundIndex + 1}`}
+          {busy ? (
+            <LoaderCircle className="spin" size={19} />
+          ) : (
+            <Check size={19} />
+          )}
+          {character
+            ? `อัปเดตตัวละครรอบที่ ${roundIndex + 1}`
+            : `ยืนยันตัวละครรอบที่ ${roundIndex + 1}`}
         </button>
       </form>
     </section>
@@ -387,10 +624,15 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
       <main className="lobby page-shell">
         <div className="lobby__intro">
           <div>
-            <span className="eyebrow"><PartyPopper size={16} /> ห้องพร้อมแล้ว</span>
+            <span className="eyebrow">
+              <PartyPopper size={16} /> ห้องพร้อมแล้ว
+            </span>
             <h1>ชวนเพื่อนเข้ามา แล้วเลือกตัวละครได้เลย</h1>
           </div>
-          <p>แชร์รหัส <b>{room.code}</b> ให้เพื่อน ทุกอย่างในหน้านี้จะอัปเดตแบบเรียลไทม์</p>
+          <p>
+            แชร์รหัส <b>{room.code}</b> ให้เพื่อน
+            ทุกอย่างในหน้านี้จะอัปเดตแบบเรียลไทม์
+          </p>
         </div>
 
         <div className="lobby__grid">
@@ -399,21 +641,42 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
             <section className="panel match-rules">
               <span className="section-kicker">ตั้งค่าโดยโฮสต์</span>
               <h2>เล่นทั้งหมด {room.totalRounds} รอบ</h2>
-              <p>ส่งตัวละครคนละ {room.totalRounds} ตัว แยกตามรอบ แล้วกดยืนยันแต่ละตัวให้ครบก่อนเริ่ม</p>
-              <p>คะแนนเรียงตามอันดับทายถูก: {Array.from({ length: room.playerCount }, (_, i) => room.playerCount - i - 1).join(' · ')} แต้ม</p>
-              <p className="helper-copy">คนสุดท้ายได้ 0 แต้มแล้วจบรอบทันที พักดูผล 6 วินาที ก่อนเริ่มรอบถัดไปอัตโนมัติ</p>
+              <p>
+                ส่งตัวละครคนละ {room.totalRounds} ตัว แยกตามรอบ
+                แล้วกดยืนยันแต่ละตัวให้ครบก่อนเริ่ม
+              </p>
+              <p>
+                คะแนนเรียงตามอันดับทายถูก:{' '}
+                {Array.from(
+                  { length: room.playerCount },
+                  (_, i) => room.playerCount - i - 1,
+                ).join(' · ')}{' '}
+                แต้ม
+              </p>
+              <p className="helper-copy">
+                คนสุดท้ายได้ 0 แต้มแล้วจบรอบทันที พักดูผล 6 วินาที
+                ก่อนเริ่มรอบถัดไปอัตโนมัติ
+              </p>
             </section>
           </div>
           <div className="character-submissions">
             {Array.from({ length: room.totalRounds }, (_, index) => (
-              <CharacterForm key={index} character={room.myCharacters[index]} roundIndex={index} onSubmit={onSubmitCharacter} busy={busy || !connected} />
+              <CharacterForm
+                key={index}
+                character={room.myCharacters[index]}
+                roundIndex={index}
+                onSubmit={onSubmitCharacter}
+                busy={busy || !connected}
+              />
             ))}
           </div>
         </div>
 
         <section className="start-bar">
           <div>
-            <strong>{canStart ? 'ทุกคนพร้อมแล้ว!' : 'กำลังรอความพร้อม...'}</strong>
+            <strong>
+              {canStart ? 'ทุกคนพร้อมแล้ว!' : 'กำลังรอความพร้อม...'}
+            </strong>
             <span>
               {room.playerCount < 2
                 ? 'ต้องมีผู้เล่นอย่างน้อย 2 คน'
@@ -425,12 +688,23 @@ function Lobby({ room, connected, onLeave, onSubmitCharacter, onStart, busy }) {
             </span>
           </div>
           {me?.isHost ? (
-            <button className="primary-button start-button" type="button" disabled={!canStart || busy || !connected} onClick={onStart}>
-              {busy ? <LoaderCircle className="spin" size={20} /> : <Play size={20} fill="currentColor" />}
+            <button
+              className="primary-button start-button"
+              type="button"
+              disabled={!canStart || busy || !connected}
+              onClick={onStart}
+            >
+              {busy ? (
+                <LoaderCircle className="spin" size={20} />
+              ) : (
+                <Play size={20} fill="currentColor" />
+              )}
               เริ่มเกม
             </button>
           ) : (
-            <span className="waiting-host"><Crown size={18} /> รอโฮสต์เริ่มเกม</span>
+            <span className="waiting-host">
+              <Crown size={18} /> รอโฮสต์เริ่มเกม
+            </span>
           )}
         </section>
       </main>
@@ -448,6 +722,8 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [restoring, setRestoring] = useState(Boolean(readSavedSession()))
   const [message, setMessage] = useState('')
+  const [bankOpen, setBankOpen] = useState(false)
+  const account = useQuizAccount(setMessage)
   const sessionRef = useRef(readSavedSession())
 
   useEffect(() => {
@@ -501,15 +777,42 @@ function App() {
 
   const currentView = useMemo(() => {
     if (!room) return 'landing'
-    return room.status === 'playing' || room.status === 'finished' ? 'game' : 'lobby'
+    return room.status === 'playing' || room.status === 'finished'
+      ? 'game'
+      : 'lobby'
   }, [room])
 
-  async function enterRoom({ mode, name, roomCode, totalRounds, localError }) {
+  async function enterRoom({
+    mode,
+    name,
+    roomCode,
+    totalRounds,
+    gameMode,
+    settings,
+    localError,
+  }) {
     if (localError) return setMessage(localError)
     setBusy(true)
     setMessage('')
-    const event = mode === 'create' ? 'createRoom' : 'joinRoom'
-    const response = await emitWithAck(event, { name, roomCode, totalRounds })
+    const event =
+      mode === 'create'
+        ? gameMode === 'odd'
+          ? 'quizCreate'
+          : 'createRoom'
+        : 'joinRoom'
+    let token
+    try {
+      token = await accessToken()
+    } catch {
+      /* The classic game works without Supabase. */
+    }
+    const response = await emitWithAck(event, {
+      name,
+      roomCode,
+      totalRounds,
+      settings,
+      accessToken: token,
+    })
     if (response?.ok) {
       sessionRef.current = response.session
       saveSession(response.session)
@@ -525,7 +828,8 @@ function App() {
     setMessage('')
     const response = await emitWithAck(event, payload)
     if (response?.state) setRoom(receiveRoom(response.state))
-    if (!response?.ok) setMessage(response?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
+    if (!response?.ok)
+      setMessage(response?.error || 'เกิดข้อผิดพลาด กรุณาลองใหม่')
     setBusy(false)
     return response
   }
@@ -549,25 +853,57 @@ function App() {
 
   return (
     <>
-      {currentView === 'landing' && <Landing onEnter={enterRoom} busy={busy} connected={connected} />}
-      {currentView === 'lobby' && (
+      {currentView === 'landing' &&
+        (bankOpen ? (
+          <QuestionBank
+            account={account}
+            onBack={() => setBankOpen(false)}
+            onError={setMessage}
+          />
+        ) : (
+          <Landing
+            onEnter={enterRoom}
+            busy={busy}
+            connected={connected}
+            account={account}
+            onBank={() => setBankOpen(true)}
+          />
+        ))}
+      {room?.gameMode === 'odd' && (
+        <QuizGame
+          room={room}
+          connected={connected}
+          busy={busy}
+          onAction={runRoomAction}
+          topbar={
+            <RoomTopbar room={room} connected={connected} onLeave={leaveRoom} />
+          }
+        />
+      )}
+      {currentView === 'lobby' && room.gameMode !== 'odd' && (
         <Lobby
           room={room}
           connected={connected}
           onLeave={leaveRoom}
-          onSubmitCharacter={(payload) => runRoomAction('submitCharacter', payload)}
+          onSubmitCharacter={(payload) =>
+            runRoomAction('submitCharacter', payload)
+          }
           onStart={() => runRoomAction('startGame')}
           busy={busy}
         />
       )}
-      {currentView === 'game' && (
+      {currentView === 'game' && room.gameMode !== 'odd' && (
         <Game
           room={room}
           connected={connected}
-          topbar={<RoomTopbar room={room} connected={connected} onLeave={leaveRoom} />}
+          topbar={
+            <RoomTopbar room={room} connected={connected} onLeave={leaveRoom} />
+          }
           onReset={() => runRoomAction('resetGame')}
           onAnswer={(turnId) => runRoomAction('requestAnswer', { turnId })}
-          onVote={(voteId, correct) => runRoomAction('castVote', { voteId, correct })}
+          onVote={(voteId, correct) =>
+            runRoomAction('castVote', { voteId, correct })
+          }
           busy={busy}
         />
       )}

@@ -1,6 +1,6 @@
 {
   "name": "guess-who-party",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "workspaces": [
     "client",
@@ -10,12 +10,14 @@
     "dev": "concurrently -n SERVER,CLIENT -c magenta,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client",
     "start": "npm run start -w server",
-    "test": "npm run test -w server"
+    "test": "npm run test -w server",
+    "db:check": "node server/scripts/check-database.js",
+    "db:smoke": "node server/scripts/smoke-storage.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }
